@@ -1,0 +1,19 @@
+version: "2"
+sql:
+  - engine: "mysql"
+    # Only the DDL migration is parsed by sqlc. Seed data and immutability
+    # triggers live in later migrations and are intentionally excluded because
+    # they are not part of the queryable schema model.
+    schema:
+      - "migrations/000001_ledger_core.up.sql"
+    queries: "internal/db/queries"
+    gen:
+      go:
+        package: "sqlc"
+        out: "internal/db/sqlc"
+        sql_package: "database/sql"
+        emit_json_tags: true
+        emit_prepared_queries: false
+        emit_interface: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true

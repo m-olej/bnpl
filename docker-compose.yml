@@ -1,0 +1,46 @@
+# Local development topology for the BNPL platform.
+#
+# MySQL 8 is the single ACID store for the ledger, orders, installments and the
+# idempotency table (see docs/001.. and docs/0002..). Running it as READ
+# COMMITTED matches the isolation level used by the Go repositories.
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: bnpl-mysql
+    restart: unless-stopped
+    command:
+      - --transaction-isolation=READ-COMMITTED
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-flush-log-at-trx-commit=1
+      # Required so the append-only guard triggers (migration 000002) can be
+      # created while binary logging is enabled.
+      - --log-bin-trust-function-creators=1
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpw}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-bnpl}
+      MYSQL_USER: ${MYSQL_USER:-bnpl}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-bnplpw}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "127.0.0.1",
+          "-u",
+          "root",
+          "-p${MYSQL_ROOT_PASSWORD:-rootpw}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  mysql_data:
