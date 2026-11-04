@@ -115,6 +115,33 @@ func (q *Queries) GetOrderByRef(ctx context.Context, orderRef string) (Order, er
 	return i, err
 }
 
+const getOrderByRefForUpdate = `-- name: GetOrderByRefForUpdate :one
+SELECT id, order_ref, customer_id, merchant_id, principal_amount, currency, installment_count, fee_amount, status, idempotency_key, created_at, updated_at
+FROM orders
+WHERE order_ref = ?
+FOR UPDATE
+`
+
+func (q *Queries) GetOrderByRefForUpdate(ctx context.Context, orderRef string) (Order, error) {
+	row := q.db.QueryRowContext(ctx, getOrderByRefForUpdate, orderRef)
+	var i Order
+	err := row.Scan(
+		&i.ID,
+		&i.OrderRef,
+		&i.CustomerID,
+		&i.MerchantID,
+		&i.PrincipalAmount,
+		&i.Currency,
+		&i.InstallmentCount,
+		&i.FeeAmount,
+		&i.Status,
+		&i.IdempotencyKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertOrder = `-- name: InsertOrder :execresult
 INSERT INTO orders
     (order_ref, customer_id, merchant_id, principal_amount, currency,

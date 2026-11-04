@@ -40,6 +40,10 @@ func MapError(err error) MappedError {
 		errors.Is(err, ledger.ErrInvalidInstallmentSplit):
 		return MappedError{Status: http.StatusBadRequest, Code: "invalid_request", Message: err.Error()}
 
+	case errors.Is(err, ledger.ErrInvalidRefund),
+		errors.Is(err, ledger.ErrRefundExceedsOutstanding):
+		return MappedError{Status: http.StatusUnprocessableEntity, Code: "refund_not_allowed", Message: err.Error()}
+
 	case errors.Is(err, ledger.ErrUnbalancedJournal),
 		errors.Is(err, ledger.ErrTooFewPostings),
 		errors.Is(err, ledger.ErrNonPositiveAmount),

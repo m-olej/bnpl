@@ -26,3 +26,18 @@ func CalculateFee(principal, feeBps int64) (int64, error) {
 	}
 	return (principal * feeBps) / 10000, nil
 }
+
+// mulDiv computes a*b/c with integer arithmetic, returning ErrAmountOverflow
+// when a*b would overflow int64. c must be positive.
+func mulDiv(a, b, c int64) (int64, error) {
+	if c <= 0 {
+		return 0, fmt.Errorf("%w: divisor %d must be positive", ErrAmountOverflow, c)
+	}
+	if a == 0 || b == 0 {
+		return 0, nil
+	}
+	if a > math.MaxInt64/b {
+		return 0, fmt.Errorf("%w: %d * %d overflows int64", ErrAmountOverflow, a, b)
+	}
+	return (a * b) / c, nil
+}

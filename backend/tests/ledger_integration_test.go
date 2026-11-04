@@ -9,6 +9,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -223,4 +224,100 @@ func mustBalance(t *testing.T, ctx context.Context, repo *ledger.Repository, acc
 func mustSystemBalance(t *testing.T, ctx context.Context, repo *ledger.Repository, code string) ledger.Balance {
 	t.Helper()
 	return mustBalance(t, ctx, repo, mustSystemAccountID(t, ctx, repo, code))
+}
+
+func TestLedgerRefundPartialThenFull(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(ctx, database.DefaultConfig(testDSN(t)))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	repo := ledger.NewRepository(db)
+	suffix := time.Now().UnixNano()
+
+	customer, err := repo.CreateCustomer(ctx, fmt.Sprintf("rcust-%d", suffix), "Refund Test", 500000, "USD")
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	merchant, err := repo.CreateMerchant(ctx, fmt.Sprintf("rmerch-%d", suffix), "Refund Merchant", 250, "USD")
+	if err != nil {
+		t.Fatalf("create merchant: %v", err)
+	}
+
+	orderRef := fmt.Sprintf("rorder-%d", suffix)
+	if _, err := repo.CreateOrderWithSchedule(ctx, ledger.CreateOrderParams{
+		OrderRef:         orderRef,
+		CustomerID:       customer.ID,
+		MerchantID:       merchant.ID,
+		PrincipalAmount:  10000,
+		Currency:         "USD",
+		InstallmentCount: 3,
+		FirstDueDate:     time.Now().UTC().Truncate(time.Second),
+		Interval:         14 * 24 * time.Hour,
+		TraceID:          "refund-trace",
+	}); err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+
+	receivable := mustAccount(t, ctx, repo, ledger.CodeCustomerReceivable, ledger.OwnerCustomer, customer.ID)
+	payable := mustAccount(t, ctx, repo, ledger.CodeMerchantPayable, ledger.OwnerMerchant, merchant.ID)
+
+	// Refunding more than the outstanding principal is rejected.
+	if _, err := repo.RefundOrder(ctx, ledger.RefundParams{OrderRef: orderRef, Amount: 10001}); !errors.Is(err, ledger.ErrRefundExceedsOutstanding) {
+		t.Fatalf("over-refund err = %v, want ErrRefundExceedsOutstanding", err)
+	}
+
+	// Partial refund of 4000: fee reversal 100, merchant reduction 3900.
+	partial, err := repo.RefundOrder(ctx, ledger.RefundParams{OrderRef: orderRef, Amount: 4000, Reason: "partial"})
+	if err != nil {
+		t.Fatalf("partial refund: %v", err)
+	}
+	if partial.FeeRefunded != 100 || partial.MerchantReduction != 3900 {
+		t.Errorf("partial = fee %d merchant %d, want 100 / 3900", partial.FeeRefunded, partial.MerchantReduction)
+	}
+	if partial.OrderStatus != "AUTHORIZED" {
+		t.Errorf("partial status = %s, want AUTHORIZED", partial.OrderStatus)
+	}
+	if partial.RemainingOutstanding != 6000 {
+		t.Errorf("partial remaining = %d, want 6000", partial.RemainingOutstanding)
+	}
+
+	if bal := mustBalance(t, ctx, repo, receivable.ID); bal.Net() != 6000 {
+		t.Errorf("receivable net after partial refund = %d, want 6000", bal.Net())
+	}
+
+	// Full refund of the remaining 6000 clears fee, payable and receivable.
+	full, err := repo.RefundOrder(ctx, ledger.RefundParams{OrderRef: orderRef, Amount: 6000, Reason: "rest"})
+	if err != nil {
+		t.Fatalf("full refund: %v", err)
+	}
+	if full.FeeRefunded != 150 || full.MerchantReduction != 5850 {
+		t.Errorf("full = fee %d merchant %d, want 150 / 5850", full.FeeRefunded, full.MerchantReduction)
+	}
+	if full.OrderStatus != "REFUNDED" || full.RemainingOutstanding != 0 {
+		t.Errorf("full = status %s remaining %d, want REFUNDED / 0", full.OrderStatus, full.RemainingOutstanding)
+	}
+
+	if bal := mustBalance(t, ctx, repo, receivable.ID); bal.Net() != 0 {
+		t.Errorf("receivable net after full refund = %d, want 0", bal.Net())
+	}
+	if bal := mustBalance(t, ctx, repo, payable.ID); bal.Signed(ledger.NormalCredit) != 0 {
+		t.Errorf("merchant payable after full refund = %d, want 0", bal.Signed(ledger.NormalCredit))
+	}
+
+	order, err := repo.GetOrderByRef(ctx, orderRef)
+	if err != nil {
+		t.Fatalf("get order: %v", err)
+	}
+	if order.Status != "REFUNDED" {
+		t.Errorf("order status = %s, want REFUNDED", order.Status)
+	}
+
+	// Nothing left to refund.
+	if _, err := repo.RefundOrder(ctx, ledger.RefundParams{OrderRef: orderRef, Amount: 1}); !errors.Is(err, ledger.ErrRefundExceedsOutstanding) {
+		t.Fatalf("refund after full err = %v, want ErrRefundExceedsOutstanding", err)
+	}
 }

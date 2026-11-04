@@ -40,6 +40,7 @@ type Querier interface {
 	GetOrderByIDForUpdate(ctx context.Context, id uint64) (Order, error)
 	GetOrderByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (Order, error)
 	GetOrderByRef(ctx context.Context, orderRef string) (Order, error)
+	GetOrderByRefForUpdate(ctx context.Context, orderRef string) (Order, error)
 	InsertAccount(ctx context.Context, arg InsertAccountParams) (sql.Result, error)
 	InsertCustomer(ctx context.Context, arg InsertCustomerParams) (sql.Result, error)
 	// Pre-flight claim (docs/0002). A duplicate-key error (1062) means another
@@ -57,6 +58,12 @@ type Querier interface {
 	MarkInstallmentPaid(ctx context.Context, arg MarkInstallmentPaidParams) error
 	MarkInstallmentProcessing(ctx context.Context, id uint64) error
 	RescheduleInstallment(ctx context.Context, id uint64) error
+	// Total already collected for an order.
+	SumCollectedInstallments(ctx context.Context, orderID uint64) (int64, error)
+	// Aggregates prior REFUND entries for an order: principal credited back to the
+	// customer receivable, and fee debited from fee revenue (for proportional
+	// reversal).
+	SumOrderRefundPostings(ctx context.Context, arg SumOrderRefundPostingsParams) (SumOrderRefundPostingsRow, error)
 	UpdateCustomerCreditLimit(ctx context.Context, arg UpdateCustomerCreditLimitParams) error
 	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) error
 	// Idempotent account creation. LAST_INSERT_ID(id) makes LastInsertId() return

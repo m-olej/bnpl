@@ -51,4 +51,9 @@ var (
 	// ErrInsufficientCredit is returned when a customer's available credit
 	// cannot cover a requested principal.
 	ErrInsufficientCredit = errors.New("ledger: insufficient credit")
+	// ErrInvalidRefund is returned when refund inputs are invalid.
+	ErrInvalidRefund = errors.New("ledger: invalid refund")
+	// ErrRefundExceedsOutstanding is returned when a refund is larger than the
+	// order's remaining (uncollected, unrefunded) principal.
+	ErrRefundExceedsOutstanding = errors.New("ledger: refund exceeds outstanding principal")
 )

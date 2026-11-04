@@ -258,3 +258,95 @@ func mustJSON(t *testing.T, raw []byte, v any) {
 		t.Fatalf("unmarshal %s: %v", string(raw), err)
 	}
 }
+
+func TestHTTPRefundFlow(t *testing.T) {
+	h, cleanup := newHTTPHarness(t)
+	defer cleanup()
+
+	suffix := time.Now().UnixNano()
+	merchantRef := fmt.Sprintf("m3-%d", suffix)
+	customerRef := fmt.Sprintf("c3-%d", suffix)
+
+	resp, body := h.do(t, http.MethodPost, h.underwriting.URL+"/api/v1/merchants",
+		fmt.Sprintf("merch3-%d", suffix), fmt.Sprintf(`{"merchant_ref":%q,"name":"Refundable","fee_bps":250}`, merchantRef))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create merchant status = %d body=%s", resp.StatusCode, body)
+	}
+	var merchant struct {
+		ID int64 `json:"id"`
+	}
+	mustJSON(t, body, &merchant)
+
+	resp, body = h.do(t, http.MethodPost, h.underwriting.URL+"/api/v1/customers",
+		fmt.Sprintf("cust3-%d", suffix), fmt.Sprintf(`{"external_ref":%q,"full_name":"Refund Me","credit_limit":100000}`, customerRef))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create customer status = %d body=%s", resp.StatusCode, body)
+	}
+	var customer struct {
+		ID int64 `json:"id"`
+	}
+	mustJSON(t, body, &customer)
+
+	authBody := fmt.Sprintf(
+		`{"customer_id":%d,"merchant_id":%d,"principal_amount":10000,"installment_count":4,"interval_days":14}`,
+		customer.ID, merchant.ID)
+	resp, body = h.do(t, http.MethodPost, h.checkout.URL+"/api/v1/checkout/authorize", fmt.Sprintf("auth3-%d", suffix), authBody)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("authorize status = %d body=%s", resp.StatusCode, body)
+	}
+	var authorized struct {
+		Order struct {
+			OrderRef string `json:"order_ref"`
+		} `json:"order"`
+	}
+	mustJSON(t, body, &authorized)
+	orderRef := authorized.Order.OrderRef
+
+	// Refund half the principal.
+	refundKey := fmt.Sprintf("refund-%d", suffix)
+	resp, body = h.do(t, http.MethodPost, h.checkout.URL+"/api/v1/orders/"+orderRef+"/refunds",
+		refundKey, `{"amount":5000,"reason":"customer changed mind"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("refund status = %d body=%s", resp.StatusCode, body)
+	}
+	var refunded struct {
+		RefundedAmount       int64  `json:"refunded_amount"`
+		RemainingOutstanding int64  `json:"remaining_outstanding"`
+		OrderStatus          string `json:"order_status"`
+	}
+	mustJSON(t, body, &refunded)
+	if refunded.RefundedAmount != 5000 || refunded.RemainingOutstanding != 5000 {
+		t.Errorf("refund = %+v, want refunded 5000 remaining 5000", refunded)
+	}
+	if refunded.OrderStatus != "AUTHORIZED" {
+		t.Errorf("order status = %s, want AUTHORIZED", refunded.OrderStatus)
+	}
+
+	// Replaying the same key returns the cached response.
+	resp, body = h.do(t, http.MethodPost, h.checkout.URL+"/api/v1/orders/"+orderRef+"/refunds",
+		refundKey, `{"amount":5000,"reason":"customer changed mind"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("refund replay status = %d body=%s", resp.StatusCode, body)
+	}
+	if resp.Header.Get("Idempotent-Replay") != "true" {
+		t.Error("expected Idempotent-Replay header on replayed refund")
+	}
+
+	// Over-refunding the remainder is rejected.
+	resp, body = h.do(t, http.MethodPost, h.checkout.URL+"/api/v1/orders/"+orderRef+"/refunds",
+		fmt.Sprintf("refund-over-%d", suffix), `{"amount":5001}`)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("over-refund status = %d, want 422 body=%s", resp.StatusCode, body)
+	}
+
+	// Refund the remaining principal; the order becomes REFUNDED.
+	resp, body = h.do(t, http.MethodPost, h.checkout.URL+"/api/v1/orders/"+orderRef+"/refunds",
+		fmt.Sprintf("refund-rest-%d", suffix), `{"amount":5000}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("final refund status = %d body=%s", resp.StatusCode, body)
+	}
+	mustJSON(t, body, &refunded)
+	if refunded.OrderStatus != "REFUNDED" || refunded.RemainingOutstanding != 0 {
+		t.Errorf("final refund = %+v, want REFUNDED / 0", refunded)
+	}
+}

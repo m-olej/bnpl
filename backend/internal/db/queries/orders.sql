@@ -20,6 +20,12 @@ SELECT *
 FROM orders
 WHERE order_ref = ?;
 
+-- name: GetOrderByRefForUpdate :one
+SELECT *
+FROM orders
+WHERE order_ref = ?
+FOR UPDATE;
+
 -- name: GetOrderByIdempotencyKey :one
 SELECT *
 FROM orders

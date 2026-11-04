@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: BNPL Split-Payment Engine API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Checkout and Underwriting HTTP APIs over an immutable, double-entry ledger.
 
@@ -88,6 +88,37 @@ paths:
                       $ref: "#/components/schemas/Installment"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/orders/{orderRef}/refunds:
+    post:
+      tags: [Checkout]
+      summary: Refund (part of) an order's outstanding principal
+      description: |
+        Posts a compensating REFUND journal entry. Refunds only reduce the
+        order's outstanding (uncollected, unrefunded) principal; a refund equal
+        to the remaining outstanding principal marks the order REFUNDED.
+      parameters:
+        - $ref: "#/components/parameters/OrderRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefundRequest"
+      responses:
+        "201":
+          description: Refund posted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
 
   /api/v1/customers:
     post:
@@ -449,6 +480,45 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Installment"
+
+    RefundRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Refund amount in minor units, at most the outstanding principal.
+        reason:
+          type: string
+
+    RefundResponse:
+      type: object
+      properties:
+        order_id:
+          type: integer
+          format: int64
+        order_ref:
+          type: string
+        journal_entry_id:
+          type: integer
+          format: int64
+        refunded_amount:
+          type: integer
+          format: int64
+        fee_refunded:
+          type: integer
+          format: int64
+        merchant_reduction:
+          type: integer
+          format: int64
+        order_status:
+          type: string
+          enum: [PENDING, AUTHORIZED, ACTIVE, COMPLETED, CANCELLED, REFUNDED]
+        remaining_outstanding:
+          type: integer
+          format: int64
 
     CreateCustomerRequest:
       type: object

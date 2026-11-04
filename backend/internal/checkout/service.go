@@ -90,6 +90,28 @@ func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeOu
 	}, nil
 }
 
+// RefundInput describes a refund request against an order.
+type RefundInput struct {
+	OrderRef       string
+	Amount         int64
+	Reason         string
+	IdempotencyKey *string
+	TraceID        string
+}
+
+// Refund issues a (partial) refund against an order's outstanding principal.
+// Amount is a positive magnitude in minor units; a refund equal to the
+// remaining outstanding principal fully refunds the order.
+func (s *Service) Refund(ctx context.Context, in RefundInput) (ledger.RefundResult, error) {
+	return s.repo.RefundOrder(ctx, ledger.RefundParams{
+		OrderRef:       in.OrderRef,
+		Amount:         in.Amount,
+		Reason:         in.Reason,
+		TraceID:        in.TraceID,
+		IdempotencyKey: in.IdempotencyKey,
+	})
+}
+
 // GetOrder loads an order and its schedule by order reference.
 func (s *Service) GetOrder(ctx context.Context, orderRef string) (ledger.Order, []ledger.Installment, error) {
 	order, err := s.repo.GetOrderByRef(ctx, orderRef)

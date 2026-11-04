@@ -235,3 +235,103 @@ repository. Split the app DSN from the migration DSN (see clarification 2).
 Build the React + TypeScript (Vite) app in `frontend/` with TanStack Query to
 trigger checkouts, inspect schedules, and issue partial refunds, backed by the
 new refund endpoint.
+
+---
+
+## Phase 3 — Refunds & React Frontend ✅ (2026-11-04)
+
+### Delivered
+
+- **Refund ledger core** (`backend/internal/ledger/refund.go`):
+  - `RefundParams` / `RefundResult` and `RefundOrder(ctx, params)` implementing
+    the compensating `REFUND` journal entry: **Credit `CUSTOMER_RECEIVABLE`
+    `amount`; Debit `MERCHANT_PAYABLE` `merchantReduction`; Debit
+    `MERCHANT_FEE_REVENUE` `feeRefund`**.
+  - The order row is locked first (`GetOrderByRefForUpdate`, new sqlc query),
+    then accounts are locked ascending by id inside `postJournal` — same lock
+    ordering as the rest of the ledger.
+  - Outstanding principal is derived, never stored:
+    `principal − collected(PAID installments) − prior refund postings`
+    (`SumCollectedInstallments`, `SumOrderRefundPostings` in
+    `queries/refunds.sql`). Only the outstanding/uncollected principal is
+    refundable; there is no cash-disbursement path for already-collected money.
+  - Fee reversal is proportional to the outstanding principal
+    (`mulDiv`), reversing the **exact remaining fee** on a full refund, and is
+    clamped to `[0, amount]` so the balancing merchant-payable debit can never go
+    negative (guards heavily-collected orders). Pure helper `refundFee` is
+    table-tested.
+  - A refund that clears the outstanding principal marks the order `REFUNDED`;
+    otherwise the status is left as-is (supporting multiple partial refunds).
+  - New sentinels `ErrInvalidRefund` (bad input) and
+    `ErrRefundExceedsOutstanding` (`amount > outstanding`).
+- **Checkout API**: `Service.Refund`, `POST /api/v1/orders/{orderRef}/refunds`
+  (idempotent, body `{amount, reason}`, `201` with fee/merchant splits and
+  remaining outstanding), wired through the existing middleware chain.
+- **Error mapping**: refund errors → `422 refund_not_allowed`
+  (`ErrInvalidRefund`, `ErrRefundExceedsOutstanding`).
+- **OpenAPI**: new refund path + `RefundRequest` / `RefundResponse` schemas,
+  version bumped to `0.3.0`.
+- **React + TypeScript frontend** (`frontend/`, React 19 + Vite 7 +
+  TanStack Query):
+  - `src/api/` — typed client (`fetch` wrapper adding `X-Actor-Type`/`X-Actor-Id`
+    and a per-mutation `Idempotency-Key` via `crypto.randomUUID()`), API types
+    mirroring the REST contracts, and TanStack Query hooks
+    (`useAuthorize`, `useOrder`, `useRefund`, `useCreateCustomer`,
+    `useCreateMerchant`, `useCreditPosition`).
+  - `src/lib/money.ts` — string-based `dollarsToCents` / `centsToDollars`
+    (BigInt), so no float ever touches a monetary value in the UI.
+  - Components: onboarding panel (customer + merchant), checkout form,
+    order panel (schedule table, partial-refund form, available-credit display).
+  - Vite dev proxy `/checkout → :8081`, `/underwriting → :8082` (prefix stripped)
+    keeps the browser same-origin with no CORS setup.
+  - Strict TypeScript (`strict`, `noUnusedLocals`, `noUnusedParameters`,
+    `verbatimModuleSyntax`, no `any`), flat ESLint config.
+- **Tests**: table-driven `refundFee` unit tests; ledger integration test
+  (partial → full refund, over-refund rejection, derived balances zeroed,
+  `REFUNDED` transition); HTTP integration test (refund + idempotent replay +
+  422 over-refund + final `REFUNDED`).
+
+### Verification (all green)
+
+| Command | Result |
+| --- | --- |
+| `go build ./...` | OK |
+| `go vet ./...` | OK |
+| `golangci-lint run ./...` | 0 issues |
+| `go test -race ./internal/...` | ok |
+| `go test -race -tags=integration ./tests/...` | 7/7 pass |
+| `npm --prefix frontend run lint` | clean |
+| `npm --prefix frontend run build` | tsc + vite build OK |
+
+### Implementation-specific clarifications (carry into Phase 4)
+
+1. **Refunds are compensating entries**, never mutations of history: a `REFUND`
+   journal entry with `reference_type='order'` tallies prior reversals via
+   `SumOrderRefundPostings` (keyed by the customer receivable and fee-revenue
+   account ids).
+2. **Only outstanding principal is refundable.** `principal − collected −
+   refunded > 0` is the refund ceiling; the API returns `422` beyond it. A cash
+   disbursement path (refunding already-collected installments) is deliberately
+   out of scope until a treasury/settlement model lands.
+3. **Fee reversal is clamped to the refunded amount.** Proportional reversal
+   (`mulDiv(remainingFee, amount, outstanding)`) normally never exceeds `amount`
+   for realistic fee rates; the clamp only matters when an order is nearly
+   fully collected, keeping the merchant-payable debit non-negative.
+4. **Refund idempotency** relies on the shared `Idempotency-Key` middleware.
+   Unlike orders there is no domain-level unique constraint on refunds
+   (`journal_entries.idempotency_key` is non-unique), so the crash-between-commit
+   and completion caveat from Phase 2 clarification 3 applies.
+5. **Frontend is dev-proxy only**: `npm run build` emits static assets, but there
+   is no production reverse proxy/serving config yet; the two services must run
+   on `:8081`/`:8082` for the dev flow.
+
+### Open items for Phase 4
+
+- **Merchant payout / collection worker**: wire `ClaimDueInstallments` +
+  `PayInstallment` into a background worker and emit `MERCHANT_PAYOUT` (deferred
+  since Phase 2).
+- **End-to-end/integration testcontainers** for the full stack, including
+  `--log-bin-trust-function-creators=1` (Phase 1 clarification 1).
+- **Real auth** to replace the placeholder `X-Actor-Type`/`X-Actor-Id` headers.
+- **Cash disbursement refunds** for already-collected installments if the
+  product requires them.
