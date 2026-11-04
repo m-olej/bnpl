@@ -15,10 +15,13 @@ type InstallmentPlan struct {
 
 // SplitInstallments divides total (minor units) into count installments.
 //
-// It is deterministic: the integer-division remainder is allocated to the
-// first installment (AGENTS.md section 1.1, e.g. $100.00 / 3 -> 3334, 3333,
-// 3333). Every installment is guaranteed to be strictly positive because
-// total must be at least count (one minor unit each).
+// It is deterministic: the integer-division remainder is spread one minor unit
+// per leading installment (largest-remainder method), so no two installments
+// differ by more than one minor unit and any installment is at most one minor
+// unit larger than the floor. This matches AGENTS.md section 1.1, e.g.
+// $100.00 / 3 -> 3334, 3333, 3333 and $100.01 / 3 -> 3334, 3334, 3333.
+// Every installment is guaranteed to be strictly positive because total must be
+// at least count (one minor unit each).
 func SplitInstallments(total int64, count int) ([]int64, error) {
 	if count < 1 {
 		return nil, fmt.Errorf("%w: count %d must be >= 1", ErrInvalidInstallmentSplit, count)
@@ -39,8 +42,10 @@ func SplitInstallments(total int64, count int) ([]int64, error) {
 	amounts := make([]int64, count)
 	for i := range amounts {
 		amounts[i] = base
+		if int64(i) < remainder {
+			amounts[i]++
+		}
 	}
-	amounts[0] += remainder
 	return amounts, nil
 }
 

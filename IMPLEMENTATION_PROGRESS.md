@@ -88,9 +88,11 @@ open questions for the next phase. Append a new section per completed phase.
    exposes `int64` everywhere (money *and* ids) and converts at the boundary.
 5. **Balance sign convention.** `Balance.Net()` is raw `debit-credit`;
    `Balance.Signed(normalBalance)` adjusts for the account's normal side.
-6. **Rounding policy (see open question Q1).** `SplitInstallments` puts the
-   integer-division remainder on the **first** installment, matching the literal
-   AGENTS.md rule. Fee `CalculateFee` **floors** (`principal*feeBps/10000`).
+6. **Rounding policy (confirmed post-review).** `SplitInstallments` spreads the
+   integer-division remainder one minor unit per leading installment
+   (largest-remainder), so no two installments differ by more than one minor
+   unit: `$100.00 / 3 → 3334, 3333, 3333` and `$100.01 / 3 → 3334, 3334, 3333`.
+   Fee `CalculateFee` **floors** (`principal*feeBps/10000`).
 7. **Account scoping.** `accounts` is uniquely keyed by
    `(code, owner_type, owner_id)`. SYSTEM accounts use `owner_id=0`; per-party
    sub-ledgers (`CUSTOMER_RECEIVABLE`, `MERCHANT_PAYABLE`) are upserted on
@@ -103,27 +105,38 @@ open questions for the next phase. Append a new section per completed phase.
 10. **`go.mod` module path** is `github.com/molej/bnpl/backend`. `google/uuid`
     was dropped by `go mod tidy` (unused in Phase 1).
 
-### Open questions for Phase 2 (please confirm)
+### Phase 2 decisions (confirmed post-review)
 
-- **Q1 (rounding):** For a multi-cent remainder (e.g. `$100.01 / 3`), the
-  current rule puts **all** remainder cents on installment #1
-  (`3335, 3333, 3333`). The common alternative is to spread remainder cents one
-  per leading installment (`3334, 3334, 3333`). Which is authoritative?
-- **Q2 (credit limits):** `customers.credit_limit` exists and is locked, but
-  Phase 1 does **not** enforce it. Should the Underwriting Service reserve
-  available credit at authorization (limit − outstanding receivables), and where
-  is that check enforced — service layer only, or also a repository guard?
-- **Q3 (merchant payout timing):** Phase 1 recognizes merchant payable at
-  authorization (platform assumes credit risk; merchant paid up front,
-  settlement via a later `MERCHANT_PAYOUT` entry). Confirm this is the intended
-  model vs. paying the merchant only as installments are collected.
-- **Q4 (API/auth scope):** No auth model is specified. For the Phase 2 REST
-  APIs, should I add a placeholder merchant/customer identity (e.g. header-based)
-  or leave endpoints unauthenticated for the demo?
-- **Q5 (currency):** The ledger validates single-currency entries but does not
-  model FX. Assume single-currency (`USD`) per deployment for now?
-- **Q6 (order references):** Should the Checkout Service generate `order_ref`
-  (UUID) server-side, or accept a merchant-supplied reference?
+- **Q1 (rounding) — RESOLVED.** Spread remainder one minor unit per leading
+  installment. Implemented in this phase; tests and docs updated.
+- **Q2 (credit limits) — RESOLVED.** Enforce at authorization in the Underwriting
+  Service **and** with a repository guard that reserves available credit
+  (limit − outstanding receivables) inside the order transaction, returning
+  `ErrInsufficientCredit`.
+- **Q4 (auth) — RESOLVED.** Header-based placeholder merchant/customer identity
+  validated by middleware (no external auth provider).
+- **Q6 (order reference) — RESOLVED.** Checkout Service generates a server-side
+  UUID `order_ref` and returns it to the client.
+- **Q5 (currency) — PROVISIONAL.** Single currency (`USD`) per deployment; the
+  ledger validates single-currency entries but models no FX.
+
+### Open question still needing a concrete decision
+
+- **Q3 (merchant payout timing) — answered "as installments are collected", but
+  the ledger mechanics need confirmation.** Two candidate models:
+
+  | Event | Model A: accrue at authorization (settle progressively) | Model B: recognize progressively |
+  | --- | --- | --- |
+  | `ORDER_AUTHORIZED` | Dr CUSTOMER_RECEIVABLE `P`; Cr MERCHANT_PAYABLE `P−fee`; Cr MERCHANT_FEE_REVENUE `fee` | Dr CUSTOMER_RECEIVABLE `P`; Cr DEFERRED_MERCHANT_PAYABLE `P−fee`; Cr MERCHANT_FEE_REVENUE `fee` |
+  | each `INSTALLMENT_PAID` | Dr CASH_CLEARING `amt`; Cr CUSTOMER_RECEIVABLE `amt` | Dr CASH_CLEARING `amt`; Cr CUSTOMER_RECEIVABLE `amt`; **and** move `amt` from DEFERRED to MERCHANT_PAYABLE |
+  | `MERCHANT_PAYOUT` | Dr MERCHANT_PAYABLE; Cr CASH_CLEARING | Dr MERCHANT_PAYABLE; Cr CASH_CLEARING |
+
+  Model A keeps the Phase 1 `ORDER_AUTHORIZED` posting unchanged and only defers
+  the payout. Model B requires an extra `DEFERRED_MERCHANT_PAYABLE` account and
+  per-installment transfers. **Recommendation: Model A** (the obligation is
+  recognized when the order is authorized; cash settlement happens as
+  collections arrive), unless "progressive recognition" is specifically wanted.
+  Awaiting confirmation before Phase 2.
 
 ### Phase 2 preview
 

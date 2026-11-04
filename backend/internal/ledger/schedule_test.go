@@ -44,9 +44,19 @@ func TestSplitInstallments(t *testing.T) {
 			want: []int64{1},
 		},
 		{
-			name:  "remainder of two cents lands on first",
+			name:  "remainder of one cent to leading installment",
 			total: 5, count: 2,
 			want: []int64{3, 2},
+		},
+		{
+			name:  "two remainder cents spread over leading installments",
+			total: 10001, count: 3,
+			want: []int64{3334, 3334, 3333},
+		},
+		{
+			name:  "two remainder cents over four installments",
+			total: 10002, count: 4,
+			want: []int64{2501, 2501, 2500, 2500},
 		},
 		{
 			name:  "exactly one minor unit each",
@@ -68,9 +78,10 @@ func TestSplitInstallments(t *testing.T) {
 		{
 			name:  "large total with remainder over 7",
 			total: 100000000000, count: 7,
-			// 100000000000 = 7*14285714285 + 5; remainder 5 goes to first.
-			want: []int64{14285714290, 14285714285, 14285714285, 14285714285,
-				14285714285, 14285714285, 14285714285},
+			// 100000000000 = 7*14285714285 + 5; five remainder cents spread
+			// one each across the first five installments.
+			want: []int64{14285714286, 14285714286, 14285714286, 14285714286,
+				14285714286, 14285714285, 14285714285},
 		},
 		{
 			name:  "zero total rejected",
