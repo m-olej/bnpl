@@ -208,6 +208,33 @@ func (r *Repository) ListInstallments(ctx context.Context, orderID int64) ([]Ins
 	return out, nil
 }
 
+// FailInstallment marks a claimed installment FAILED and records the reason so
+// the worker can surface it and support later retry policy.
+func (r *Repository) FailInstallment(ctx context.Context, installmentID int64, reason string) error {
+	if installmentID <= 0 {
+		return fmt.Errorf("%w: id=%d must be positive", ErrInstallmentNotFound, installmentID)
+	}
+	if err := r.q.MarkInstallmentFailed(ctx, sqlc.MarkInstallmentFailedParams{
+		LastError: nullString(&reason),
+		ID:        uint64(installmentID),
+	}); err != nil {
+		return fmt.Errorf("marking installment %d failed: %w", installmentID, err)
+	}
+	return nil
+}
+
+// RequeueStaleProcessing returns installments stuck in PROCESSING older than
+// olderThan to the SCHEDULED pool. This is the worker crash-recovery path
+// (docs/0003): a worker that claims a batch and then dies leaves rows
+// PROCESSING, which would otherwise never be retried.
+func (r *Repository) RequeueStaleProcessing(ctx context.Context, olderThan time.Time) (int64, error) {
+	n, err := r.q.RequeueStaleProcessing(ctx, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("requeueing stale processing installments: %w", err)
+	}
+	return n, nil
+}
+
 func mapInstallment(i sqlc.Installment) Installment {
 	inst := Installment{
 		ID:           int64(i.ID),

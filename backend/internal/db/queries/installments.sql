@@ -55,3 +55,26 @@ WHERE id = ?;
 UPDATE installments
 SET status = 'SCHEDULED'
 WHERE id = ?;
+
+-- name: CancelInstallment :exec
+-- Used when a refund reduces an order's outstanding principal below its
+-- scheduled amount; the tail installments are cancelled so the worker cannot
+-- collect a refunded portion.
+UPDATE installments
+SET status = 'CANCELLED'
+WHERE id = ?;
+
+-- name: UpdateInstallmentAmount :exec
+-- Adjusts the boundary installment when a refund only partially covers it.
+UPDATE installments
+SET amount = ?
+WHERE id = ?;
+
+-- name: RequeueStaleProcessing :execrows
+-- Recovery for workers that claimed an installment (marked PROCESSING) and
+-- then crashed before finalising it. Anything stuck in PROCESSING older than
+-- the cutoff is returned to the SCHEDULED pool for another worker to claim.
+UPDATE installments
+SET status = 'SCHEDULED'
+WHERE status = 'PROCESSING'
+  AND updated_at < ?;

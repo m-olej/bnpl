@@ -72,6 +72,10 @@ run-checkout: ## Run the Checkout service against the local database.
 run-underwriting: ## Run the Underwriting service against the local database.
 	cd $(BACKEND) && DB_DSN="$(DB_DSN)" go run ./cmd/underwriting
 
+.PHONY: run-worker
+run-worker: ## Run the background installment-settlement worker.
+	cd $(BACKEND) && DB_DSN="$(DB_DSN)" go run ./cmd/worker
+
 .PHONY: frontend-install
 frontend-install: ## Install frontend dependencies.
 	npm --prefix $(FRONTEND) install
@@ -83,3 +87,7 @@ frontend-lint: ## Lint the frontend.
 .PHONY: frontend-build
 frontend-build: ## Build the frontend.
 	npm --prefix $(FRONTEND) run build
+
+.PHONY: frontend-e2e
+frontend-e2e: ## Run the Playwright checkout E2E test (starts services + Vite).
+	npm --prefix $(FRONTEND) run test:e2e

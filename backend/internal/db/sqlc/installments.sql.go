@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+const cancelInstallment = `-- name: CancelInstallment :exec
+UPDATE installments
+SET status = 'CANCELLED'
+WHERE id = ?
+`
+
+// Used when a refund reduces an order's outstanding principal below its
+// scheduled amount; the tail installments are cancelled so the worker cannot
+// collect a refunded portion.
+func (q *Queries) CancelInstallment(ctx context.Context, id uint64) error {
+	_, err := q.db.ExecContext(ctx, cancelInstallment, id)
+	return err
+}
+
 const claimDueInstallments = `-- name: ClaimDueInstallments :many
 SELECT id, order_id, customer_id, installment_no, amount, currency, due_date, status, attempt_count, last_error, paid_at, journal_entry_id, created_at, updated_at
 FROM installments
@@ -245,6 +259,24 @@ func (q *Queries) MarkInstallmentProcessing(ctx context.Context, id uint64) erro
 	return err
 }
 
+const requeueStaleProcessing = `-- name: RequeueStaleProcessing :execrows
+UPDATE installments
+SET status = 'SCHEDULED'
+WHERE status = 'PROCESSING'
+  AND updated_at < ?
+`
+
+// Recovery for workers that claimed an installment (marked PROCESSING) and
+// then crashed before finalising it. Anything stuck in PROCESSING older than
+// the cutoff is returned to the SCHEDULED pool for another worker to claim.
+func (q *Queries) RequeueStaleProcessing(ctx context.Context, updatedAt time.Time) (int64, error) {
+	result, err := q.db.ExecContext(ctx, requeueStaleProcessing, updatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const rescheduleInstallment = `-- name: RescheduleInstallment :exec
 UPDATE installments
 SET status = 'SCHEDULED'
@@ -253,5 +285,22 @@ WHERE id = ?
 
 func (q *Queries) RescheduleInstallment(ctx context.Context, id uint64) error {
 	_, err := q.db.ExecContext(ctx, rescheduleInstallment, id)
+	return err
+}
+
+const updateInstallmentAmount = `-- name: UpdateInstallmentAmount :exec
+UPDATE installments
+SET amount = ?
+WHERE id = ?
+`
+
+type UpdateInstallmentAmountParams struct {
+	Amount int64  `json:"amount"`
+	ID     uint64 `json:"id"`
+}
+
+// Adjusts the boundary installment when a refund only partially covers it.
+func (q *Queries) UpdateInstallmentAmount(ctx context.Context, arg UpdateInstallmentAmountParams) error {
+	_, err := q.db.ExecContext(ctx, updateInstallmentAmount, arg.Amount, arg.ID)
 	return err
 }

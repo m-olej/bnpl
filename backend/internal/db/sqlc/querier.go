@@ -11,6 +11,10 @@ import (
 )
 
 type Querier interface {
+	// Used when a refund reduces an order's outstanding principal below its
+	// scheduled amount; the tail installments are cancelled so the worker cannot
+	// collect a refunded portion.
+	CancelInstallment(ctx context.Context, id uint64) error
 	// Distributed worker claim (docs/0003). SKIP LOCKED lets horizontally scaled
 	// workers drain the due queue without blocking on each other.
 	ClaimDueInstallments(ctx context.Context, arg ClaimDueInstallmentsParams) ([]Installment, error)
@@ -57,14 +61,24 @@ type Querier interface {
 	MarkInstallmentFailed(ctx context.Context, arg MarkInstallmentFailedParams) error
 	MarkInstallmentPaid(ctx context.Context, arg MarkInstallmentPaidParams) error
 	MarkInstallmentProcessing(ctx context.Context, id uint64) error
+	// Recovery for workers that claimed an installment (marked PROCESSING) and
+	// then crashed before finalising it. Anything stuck in PROCESSING older than
+	// the cutoff is returned to the SCHEDULED pool for another worker to claim.
+	RequeueStaleProcessing(ctx context.Context, updatedAt time.Time) (int64, error)
 	RescheduleInstallment(ctx context.Context, id uint64) error
 	// Total already collected for an order.
 	SumCollectedInstallments(ctx context.Context, orderID uint64) (int64, error)
+	// Total already settled to a merchant for an order: the sum of MERCHANT_PAYOUT
+	// debits against the merchant payable (used to compute the settlement delta, so
+	// settlement stays idempotent across worker retries).
+	SumOrderPayoutPostings(ctx context.Context, arg SumOrderPayoutPostingsParams) (int64, error)
 	// Aggregates prior REFUND entries for an order: principal credited back to the
 	// customer receivable, and fee debited from fee revenue (for proportional
 	// reversal).
 	SumOrderRefundPostings(ctx context.Context, arg SumOrderRefundPostingsParams) (SumOrderRefundPostingsRow, error)
 	UpdateCustomerCreditLimit(ctx context.Context, arg UpdateCustomerCreditLimitParams) error
+	// Adjusts the boundary installment when a refund only partially covers it.
+	UpdateInstallmentAmount(ctx context.Context, arg UpdateInstallmentAmountParams) error
 	UpdateOrderStatus(ctx context.Context, arg UpdateOrderStatusParams) error
 	// Idempotent account creation. LAST_INSERT_ID(id) makes LastInsertId() return
 	// the pre-existing row's id when the unique (code, owner_type, owner_id) key

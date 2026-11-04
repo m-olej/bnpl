@@ -63,7 +63,7 @@ export function OrderPanel({ orderRef, customerRef }: Props) {
       <dl className="facts">
         <div>
           <dt>Status</dt>
-          <dd>{detail.status}</dd>
+          <dd data-testid="order-status">{detail.status}</dd>
         </div>
         <div>
           <dt>Principal</dt>
@@ -98,7 +98,7 @@ export function OrderPanel({ orderRef, customerRef }: Props) {
         </thead>
         <tbody>
           {installments.map((inst) => (
-            <tr key={inst.id}>
+            <tr key={inst.id} data-testid="installment-row">
               <td>{inst.number}</td>
               <td>{centsToDollars(inst.amount)}</td>
               <td>{new Date(inst.due_date).toLocaleDateString()}</td>
@@ -140,7 +140,7 @@ export function OrderPanel({ orderRef, customerRef }: Props) {
         </button>
         {refund.isError && <p className="error">{errorMessage(refund.error)}</p>}
         {refund.data && (
-          <p className="ok">
+          <p className="ok" data-testid="refund-result">
             Refunded {centsToDollars(refund.data.refunded_amount)} · fee reversed{' '}
             {centsToDollars(refund.data.fee_refunded)} · merchant reduction{' '}
             {centsToDollars(refund.data.merchant_reduction)} · remaining{' '}

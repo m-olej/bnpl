@@ -335,3 +335,128 @@ new refund endpoint.
 - **Real auth** to replace the placeholder `X-Actor-Type`/`X-Actor-Id` headers.
 - **Cash disbursement refunds** for already-collected installments if the
   product requires them.
+
+---
+
+## Phase 4 — Automated Testing & CI/CD + Collection Worker ✅ (2026-11-04)
+
+Scope confirmed with the maintainer: the plan's Phase 4 (table-driven unit
+tests, testcontainers integration, one Playwright E2E test, GitHub Actions)
+**plus** the merchant payout / collection worker deferred since Phase 2
+(ADR-003).
+
+### Delivered
+
+- **Collection & payout worker** (ADR-003, `backend/internal/worker`,
+  `backend/cmd/worker`):
+  - `Worker.Tick` runs one poll cycle: requeue stale claims →
+    `ClaimDueInstallments` (`FOR UPDATE SKIP LOCKED`) → gateway capture →
+    `PayInstallment` → `SettleMerchantPayout`. `Run` loops on a ticker until the
+    context is cancelled; `SetClock` injects a clock for tests.
+  - `Gateway` interface + `SimulatedGateway` + `GatewayFunc` adapter stand in for
+    a real payment-gateway integration; the locking/persistence/settlement logic
+    is exercised regardless.
+  - The worker depends on a narrow `Ledger` interface (not the concrete
+    repository), so the poll loop is unit-testable without a database.
+  - Config via `WORKER_BATCH_SIZE`, `WORKER_POLL_INTERVAL`, `WORKER_STALE_AFTER`;
+    `make run-worker`.
+- **Delta-based, idempotent merchant settlement**
+  (`internal/ledger/payout.go`, `SettleMerchantPayout`): locks the order, derives
+  collected principal and the already-settled total (`SumOrderPayoutPostings`),
+  and posts `MERCHANT_PAYOUT` (Dr `MERCHANT_PAYABLE`, Cr `CASH_CLEARING`) for the
+  **delta** between the merchant's earned share so far
+  (`mulDiv(collected, principal−fee, principal)`) and what has already been paid
+  out. Worker retries therefore cannot double-pay; the final installment trues up
+  to exactly `principal − fee`.
+- **Worker crash recovery** (`internal/ledger/installment.go`):
+  `RequeueStaleProcessing` returns installments stuck in `PROCESSING` older than
+  a cutoff to `SCHEDULED`, so a worker that dies after claiming a batch does not
+  strand rows. `FailInstallment` records a gateway failure.
+- **Refund now reconciles the pending schedule** (correctness fix found while
+  testing the worker): `reconcileScheduleAfterRefund` walks the schedule from the
+  tail (newest first), cancelling whole tail installments (`CancelInstallment`)
+  and reducing the boundary one (`UpdateInstallmentAmount`) until the refunded
+  amount is absorbed. Previously a refund left remaining installments
+  `SCHEDULED`, so the worker would later collect an already-refunded portion.
+  `PAID` installments are never touched.
+- **Integration tests** (`backend/tests`, build tag `integration`):
+  - `TestMain` resolves the DSN from `BNPL_TEST_DSN`/`DB_DSN`, or starts a
+    throwaway MySQL 8 via testcontainers (`--log-bin-trust-function-creators=1`)
+    and applies the migration files itself when the schema is absent.
+  - `concurrency_test.go`: concurrent authorizations obey the credit limit (one
+    of six contenders wins under the customer row lock); `FOR UPDATE SKIP LOCKED`
+    skips a row held by another session and still claims the rest; concurrent full
+    refunds admit exactly one; concurrent payout settlements sum to exactly
+    `principal − fee`; and a full worker tick drives an order to `COMPLETED` with
+    zeroed receivable/payable.
+- **Playwright E2E** (`frontend/e2e/checkout.spec.ts`,
+  `frontend/playwright.config.ts`): one checkout flow — onboard customer and
+  merchant, authorize an order, assert the 3-row installment schedule, issue a
+  partial refund (`AUTHORIZED`, remaining 75.00), then refund the remainder
+  (`REFUNDED`, remaining 0.00). `playwright.config.ts` starts both Go services
+  and Vite as `webServer`s. `data-testid`s added to `OnboardingPanel`,
+  `CheckoutForm` and `OrderPanel`; `npm run test:e2e` / `make frontend-e2e`.
+- **CI** (`.github/workflows/ci.yml`), three jobs on a `mysql:8.0` service
+  container: **backend** (build, `go vet -tags=integration`, golangci-lint, unit
+  tests, integration tests), **frontend** (lint, typecheck, build) and **e2e**
+  (apply migrations with the golang-migrate CLI, then Playwright with the
+  chromium browser).
+- **Docs/tooling**: `README.md` (worker, testing and CI sections, `cmd/worker`
+  in the layout), `.env.example` (`WORKER_*`), `Makefile` (`run-worker`,
+  `frontend-e2e`).
+
+### Verification (all green)
+
+| Command | Result |
+| --- | --- |
+| `go build ./...` | OK |
+| `go vet -tags=integration ./...` | OK |
+| `golangci-lint run ./...` | 0 issues |
+| `go test -race ./internal/...` | ok |
+| `go test -race -count=1 -tags=integration ./tests/` (env MySQL) | ok |
+| `go test -race -count=1 -tags=integration ./tests/` (testcontainers) | ok |
+| `npm --prefix frontend run lint` | clean |
+| `npm --prefix frontend run build` | tsc + vite build OK |
+| `npx playwright test` (services + Vite + migrated DB) | 1 passed |
+
+### Implementation-specific clarifications (carry into Phase 5)
+
+1. **CI cannot override the service-container command**, so the required
+   `log_bin_trust_function_creators` flag is set at runtime via
+   `docker exec <container> mysql -e "SET GLOBAL log_bin_trust_function_creators=1"`
+   before migrations/tests. Locally the compose file and the testcontainers
+   `WithCmd` set it on startup instead.
+2. **Settlement is delta-based, not amount-per-installment.** `MERCHANT_PAYOUT`
+   pays the difference between the merchant's earned share of *collected*
+   principal and what it has already been paid. This makes retries idempotent
+   without a payout ledger table; the trade-off is that a payout journal entry is
+   not one-to-one with an installment.
+3. **The worker's payment gateway is simulated.** Only the ledger effects are
+   real; swapping in a live gateway means implementing `worker.Gateway`.
+4. **Testcontainers needs the same MySQL flags as compose** (Phase 1
+   clarification 1) and the `multiStatements=true` DSN to apply the migration
+   files, which the test harness now does itself — so `make migrate-up` is not a
+   precondition for the integration suite.
+5. **Go ignores environment variables for test caching**; switching between the
+   env DSN and testcontainers requires `-count=1`.
+6. **CASH_CLEARING is a global SYSTEM account**, so per-test assertions on its
+   balance are unsafe against a shared database; the worker test asserts on
+   order-scoped accounts (receivable/payable) instead.
+7. **Refunds and worker collection now interact safely**, but the refund path
+   cancels/reduces only `SCHEDULED`/`PROCESSING` installments; a refund racing a
+   *capture already in flight* is resolved by the order lock and the derived
+   (never stored) outstanding balance.
+
+### Open items for Phase 5
+
+- **Real payment-gateway integration** for `worker.Gateway` (retries, provider
+  webhooks, idempotency keys per capture).
+- **Retry/backoff policy for failed installments** — `FailInstallment` currently
+  records a terminal `FAILED` with `last_error`; dunning and late-fee entries
+  (`LATE_FEE_REVENUE` is seeded but unused) are not implemented.
+- **Real authentication** to replace the placeholder `X-Actor-Type`/`X-Actor-Id`
+  headers.
+- **Cash disbursement refunds** for already-collected installments if the product
+  requires them.
+- **Observability**: the worker logs per-installment events with `trace_id`;
+  metrics (`slog` counters only today) and alerting are still open.

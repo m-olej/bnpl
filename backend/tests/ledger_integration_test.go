@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -21,14 +20,11 @@ import (
 
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("BNPL_TEST_DSN")
-	if dsn == "" {
-		dsn = os.Getenv("DB_DSN")
+	if integrationDSN != "" {
+		return integrationDSN
 	}
-	if dsn == "" {
-		t.Skip("skipping integration test: set BNPL_TEST_DSN (or DB_DSN) to a migrated MySQL DSN")
-	}
-	return dsn
+	t.Skip("skipping integration test: set BNPL_TEST_DSN (or DB_DSN), or run with Docker for testcontainers")
+	return ""
 }
 
 func TestLedgerLifecycle(t *testing.T) {

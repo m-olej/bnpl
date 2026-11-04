@@ -3,6 +3,7 @@ package httpkit
 import (
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,7 +15,7 @@ type Middleware func(http.Handler) http.Handler
 
 // Chain applies middleware so that the first argument is the outermost layer.
 func Chain(h http.Handler, mws ...Middleware) http.Handler {
-	for i := len(mws) - 1; i >= 0; i-- {
+	for i := range slices.Backward(mws) {
 		h = mws[i](h)
 	}
 	return h

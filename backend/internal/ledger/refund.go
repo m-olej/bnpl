@@ -160,6 +160,13 @@ func (r *Repository) RefundOrder(ctx context.Context, p RefundParams) (RefundRes
 			return err
 		}
 
+		// Keep the pending schedule consistent with the reduced outstanding
+		// principal: cancel/reduce tail installments so the worker cannot
+		// collect a refunded portion.
+		if err := reconcileScheduleAfterRefund(ctx, q, order.ID, p.Amount); err != nil {
+			return err
+		}
+
 		remaining := outstanding - p.Amount
 		status := order.Status
 		if remaining == 0 {
@@ -187,6 +194,47 @@ func (r *Repository) RefundOrder(ctx context.Context, p RefundParams) (RefundRes
 		return RefundResult{}, err
 	}
 	return result, nil
+}
+
+// reconcileScheduleAfterRefund keeps the pending installment schedule aligned
+// with a refund that reduced the order's outstanding principal. It walks the
+// installments from the tail (newest first), cancelling whole installments and
+// reducing the boundary one, until the refunded amount is absorbed. Already
+// collected (PAID) installments are never touched.
+func reconcileScheduleAfterRefund(ctx context.Context, q *sqlc.Queries, orderID uint64, amount int64) error {
+	installments, err := q.ListInstallmentsByOrder(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("listing installments for order %d: %w", orderID, err)
+	}
+
+	remaining := amount
+	for i := len(installments) - 1; i >= 0 && remaining > 0; i-- {
+		inst := installments[i]
+		switch inst.Status {
+		case sqlc.InstallmentsStatusSCHEDULED, sqlc.InstallmentsStatusPROCESSING:
+		default:
+			continue
+		}
+		if inst.Amount <= remaining {
+			if err := q.CancelInstallment(ctx, inst.ID); err != nil {
+				return fmt.Errorf("cancelling installment %d: %w", inst.ID, err)
+			}
+			remaining -= inst.Amount
+			continue
+		}
+		if err := q.UpdateInstallmentAmount(ctx, sqlc.UpdateInstallmentAmountParams{
+			Amount: inst.Amount - remaining,
+			ID:     inst.ID,
+		}); err != nil {
+			return fmt.Errorf("reducing installment %d: %w", inst.ID, err)
+		}
+		remaining = 0
+	}
+	if remaining > 0 {
+		return fmt.Errorf("%w: could not apply %d of refund to order %d schedule",
+			ErrInvalidRefund, remaining, orderID)
+	}
+	return nil
 }
 
 // refundFee computes how much recognized platform fee to reverse for a refund

@@ -111,7 +111,7 @@ export function CheckoutForm({
           <p className="error">{errorMessage(authorize.error)}</p>
         )}
         {authorize.data && (
-          <p className="ok">
+          <p className="ok" data-testid="authorize-result">
             Order <code>{authorize.data.order.order_ref}</code> ·{' '}
             {authorize.data.order.status} · fee{' '}
             {centsToDollars(authorize.data.fee_amount)} · merchant payout{' '}

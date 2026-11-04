@@ -13,15 +13,18 @@ completed phase are in [`IMPLEMENTATION_PROGRESS.md`](./IMPLEMENTATION_PROGRESS.
 
 ```
 backend/                     Go module (github.com/molej/bnpl/backend)
-  cmd/                       service binaries (checkout, underwriting)
+  cmd/                       service binaries (checkout, underwriting, worker)
   internal/db/queries/       sqlc query sources (*.sql)
   internal/db/sqlc/          generated, type-safe data access (do not edit)
   internal/ledger/           double-entry domain, repository, scheduling
+  internal/worker/           due-installment settlement loop (docs/0003)
   internal/platform/         MySQL connection pool + transaction manager
   migrations/                golang-migrate raw SQL (up/down)
   tests/                     integration tests (build tag: integration)
 frontend/                    React + TypeScript app (Vite)
+  e2e/                       Playwright end-to-end checkout test
 docs/                        ADRs
+.github/workflows/ci.yml     CI: lint, unit, integration and E2E jobs
 docker-compose.yml           local MySQL 8
 Makefile                     developer task shortcuts
 ```
@@ -61,16 +64,27 @@ Copy [`.env.example`](./.env.example) to `.env` to override defaults. Note the
 two DSNs: `DB_DSN` for services (no `multiStatements`) and `MIGRATE_DSN` for
 migrations (`multiStatements=true`).
 
+If `BNPL_TEST_DSN` is unset, the integration suite starts a throwaway MySQL 8
+container via testcontainers (Docker required) and applies the migrations itself.
+
 ### Running the services
 
 ```bash
 make run-underwriting   # :8082
 make run-checkout       # :8081
+make run-worker         # background installment settlement (docs/0003)
 ```
 
-Both expose `GET /openapi.yaml` and `GET /docs` (Swagger UI). API routes require
-placeholder identity headers (`X-Actor-Type`, `X-Actor-Id`); mutating routes also
-require an `Idempotency-Key`.
+Both HTTP services expose `GET /openapi.yaml` and `GET /docs` (Swagger UI). API
+routes require placeholder identity headers (`X-Actor-Type`, `X-Actor-Id`);
+mutating routes also require an `Idempotency-Key`.
+
+The worker polls for due installments (`SELECT ... FOR UPDATE SKIP LOCKED`),
+captures them through a (simulated) payment gateway, records the collection, and
+settles the merchant's payable for the collected portion. It is safe to run
+multiple replicas: claims are disjoint and settlement is delta-based, so retries
+cannot double-pay. Tune it with `WORKER_BATCH_SIZE`, `WORKER_POLL_INTERVAL` and
+`WORKER_STALE_AFTER` (see [`.env.example`](./.env.example)).
 
 ```bash
 curl -s localhost:8082/api/v1/customers \
@@ -78,6 +92,22 @@ curl -s localhost:8082/api/v1/customers \
   -H 'Content-Type: application/json' \
   -d '{"external_ref":"cust-1","full_name":"Jane Doe","credit_limit":100000}'
 ```
+
+## Testing
+
+- **Unit tests** (table-driven, `-race`): `make test`.
+- **Integration tests** (build tag `integration`, real MySQL 8): see step 4
+  above. They cover the concurrency guarantees — the credit-limit row lock,
+  `FOR UPDATE SKIP LOCKED` claim disjointness, concurrent refunds, and idempotent
+  merchant settlement — plus a full worker collection/settlement cycle.
+- **End-to-end** (Playwright): `make frontend-e2e` drives the real React UI
+  against both Go services and the database through one checkout → schedule →
+  partial refund → full refund flow.
+
+CI (`.github/workflows/ci.yml`) runs three jobs: **backend** (build, vet, lint,
+unit and integration tests against a `mysql:8.0` service container),
+**frontend** (lint, typecheck, build) and **e2e** (apply migrations, then run
+Playwright).
 
 ## Tooling
 

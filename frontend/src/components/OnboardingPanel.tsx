@@ -97,7 +97,7 @@ export function OnboardingPanel({ onCustomerCreated, onMerchantCreated }: Props)
           <p className="error">{errorMessage(createCustomer.error)}</p>
         )}
         {createCustomer.data && (
-          <p className="ok">
+          <p className="ok" data-testid="customer-created">
             Customer #{createCustomer.data.id} · limit{' '}
             {createCustomer.data.credit_limit} minor units
           </p>
@@ -138,7 +138,7 @@ export function OnboardingPanel({ onCustomerCreated, onMerchantCreated }: Props)
           <p className="error">{errorMessage(createMerchant.error)}</p>
         )}
         {createMerchant.data && (
-          <p className="ok">
+          <p className="ok" data-testid="merchant-created">
             Merchant #{createMerchant.data.id} · fee {createMerchant.data.fee_bps} bps
           </p>
         )}
