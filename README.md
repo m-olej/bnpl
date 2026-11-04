@@ -57,7 +57,27 @@ cd backend && BNPL_TEST_DSN='bnpl:bnplpw@tcp(127.0.0.1:3306)/bnpl?parseTime=true
   go test -race -tags=integration ./tests/...
 ```
 
-Copy [`.env.example`](./.env.example) to `.env` to override defaults.
+Copy [`.env.example`](./.env.example) to `.env` to override defaults. Note the
+two DSNs: `DB_DSN` for services (no `multiStatements`) and `MIGRATE_DSN` for
+migrations (`multiStatements=true`).
+
+### Running the services
+
+```bash
+make run-underwriting   # :8082
+make run-checkout       # :8081
+```
+
+Both expose `GET /openapi.yaml` and `GET /docs` (Swagger UI). API routes require
+placeholder identity headers (`X-Actor-Type`, `X-Actor-Id`); mutating routes also
+require an `Idempotency-Key`.
+
+```bash
+curl -s localhost:8082/api/v1/customers \
+  -H 'X-Actor-Type: ADMIN' -H 'X-Actor-Id: demo' -H 'Idempotency-Key: c-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"external_ref":"cust-1","full_name":"Jane Doe","credit_limit":100000}'
+```
 
 ## Tooling
 

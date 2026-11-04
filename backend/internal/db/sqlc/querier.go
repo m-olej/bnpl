@@ -7,12 +7,15 @@ package sqlc
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 type Querier interface {
 	// Distributed worker claim (docs/0003). SKIP LOCKED lets horizontally scaled
 	// workers drain the due queue without blocking on each other.
 	ClaimDueInstallments(ctx context.Context, arg ClaimDueInstallmentsParams) ([]Installment, error)
+	CompleteIdempotencyKey(ctx context.Context, arg CompleteIdempotencyKeyParams) error
+	DeleteExpiredIdempotencyKeys(ctx context.Context, expiresAt time.Time) (int64, error)
 	// Derived projection: balance = sum(debits) - sum(credits). CAST AS SIGNED
 	// forces an integer result (MySQL otherwise widens SUM to DECIMAL).
 	GetAccountBalance(ctx context.Context, accountID uint64) (GetAccountBalanceRow, error)
@@ -24,6 +27,7 @@ type Querier interface {
 	GetCustomerByID(ctx context.Context, id uint64) (Customer, error)
 	// Must be held before modifying credit_limit (AGENTS.md section 1.3).
 	GetCustomerByIDForUpdate(ctx context.Context, id uint64) (Customer, error)
+	GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyParams) (IdempotencyKey, error)
 	GetInstallmentByID(ctx context.Context, id uint64) (Installment, error)
 	GetInstallmentByIDForUpdate(ctx context.Context, id uint64) (Installment, error)
 	GetJournalEntryByID(ctx context.Context, id uint64) (JournalEntry, error)
@@ -38,6 +42,9 @@ type Querier interface {
 	GetOrderByRef(ctx context.Context, orderRef string) (Order, error)
 	InsertAccount(ctx context.Context, arg InsertAccountParams) (sql.Result, error)
 	InsertCustomer(ctx context.Context, arg InsertCustomerParams) (sql.Result, error)
+	// Pre-flight claim (docs/0002). A duplicate-key error (1062) means another
+	// request already claimed this key for this endpoint.
+	InsertIdempotencyKey(ctx context.Context, arg InsertIdempotencyKeyParams) (sql.Result, error)
 	InsertInstallment(ctx context.Context, arg InsertInstallmentParams) (sql.Result, error)
 	InsertJournalEntry(ctx context.Context, arg InsertJournalEntryParams) (sql.Result, error)
 	InsertMerchant(ctx context.Context, arg InsertMerchantParams) (sql.Result, error)

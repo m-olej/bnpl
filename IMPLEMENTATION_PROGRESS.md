@@ -144,3 +144,94 @@ Build `cmd/checkout` and `cmd/underwriting` services with: `Idempotency-Key`
 middleware (ADR-002), structured `slog` JSON logging (`trace_id`, `user_id`,
 `idempotency_key`), OpenAPI/Swagger specs, and REST handlers over this ledger
 repository. Split the app DSN from the migration DSN (see clarification 2).
+
+---
+
+## Phase 2 — Microservices & Idempotent REST APIs ✅ (2026-11-04)
+
+### Delivered
+
+- **Shared HTTP platform** (`internal/platform/`):
+  - `httpkit` — `RequestID`, `Logging` (one structured `slog` line per request
+    with `trace_id`, `user_id`, `actor_type`, `idempotency_key`, status,
+    duration), `Recoverer`, placeholder header `Auth`, JSON helpers, strict body
+    decoding, and domain→HTTP error mapping.
+  - `logging` — JSON `slog` handler with `LOG_LEVEL`.
+  - `server` — env helpers and graceful-shutdown `Run`.
+- **Idempotency** (`internal/idempotency`, ADR-002): `MySQLStore` implementing
+  the pre-flight claim protocol plus a `claim → replay / 409 in-flight / 422
+  mismatch` middleware, response capture for replay, 24h TTL, and a
+  `PurgeExpired` maintenance query.
+- **Underwriting service** (`internal/underwriting`, `cmd/underwriting`, :8082):
+  onboard customers/merchants, get customer/merchant, `PATCH` credit limit
+  (locked), `GET` credit position, and advisory `GET /underwriting/eligibility`.
+- **Checkout service** (`internal/checkout`, `cmd/checkout`, :8081):
+  `POST /checkout/authorize` (server-generated `ord_<uuid>` reference),
+  `GET /orders/{orderRef}`, `GET /orders/{orderRef}/schedule`.
+- **Ledger additions**: repository credit guard (`ErrInsufficientCredit`)
+  enforced inside the order transaction under the locked customer row;
+  `AvailableCredit`, `SetCustomerCreditLimit`, `GetCustomer`, `GetMerchant`,
+  `GetMerchantByRef`, and `outstandingReceivable`.
+- **OpenAPI 3.1 spec** (`api/openapi.yaml`, embedded) served at `/openapi.yaml`
+  with a Swagger UI page at `/docs` on both services.
+- **DSN split**: `DB_DSN` (services, no `multiStatements`) vs `MIGRATE_DSN`
+  (golang-migrate only) — resolves Phase 1 clarification 2.
+- **Tests**: table-driven idempotency middleware unit tests (acquired / replay /
+  in-flight / mismatch / missing key / read passthrough / claim error), and HTTP
+  end-to-end integration tests (onboard → authorize → idempotent replay →
+  payload-mismatch 422 → missing-key 400 → credit position → eligibility →
+  402 on insufficient credit).
+
+### Verification (all green)
+
+| Command | Result |
+| --- | --- |
+| `go build ./...` | OK |
+| `go vet -tags=integration ./...` | OK |
+| `golangci-lint run ./...` | 0 issues |
+| `go test -race ./internal/...` | ok |
+| `go test -race -tags=integration ./tests/...` | 5/5 pass |
+| `make migrate-up` (split DSN) | no change |
+| `cmd/checkout` binary smoke test | `/openapi.yaml` 200, `/docs` 200, unauth API 401, auth 404 |
+
+### Implementation-specific clarifications (carry into Phase 3)
+
+1. **Middleware order** is `RequestID → Logging → Auth → Idempotency →
+   Recoverer → handler`. `Recoverer` is innermost so a handler panic is turned
+   into a 500 that the idempotency layer *can* cache; the key never gets stuck in
+   `PROCESSING`.
+2. **Idempotency caches every completed response, including 5xx** (literal
+   ADR-002 behaviour). Endpoint identity is `"METHOD /path"`, so the same key on
+   a different path is treated as a separate operation. `orders.idempotency_key`
+   also carries a unique constraint as a second line of defence.
+3. **Completion is a separate write** from the domain transaction. ADR-002
+   permits (but does not require) folding it into the domain commit; we kept it
+   separate for simplicity. Revisit if exactly-once caching under crash-in-between
+   becomes a requirement.
+4. **Credit enforcement** is authoritative inside
+   `CreateOrderWithSchedule` (customer row locked ⇒ serialized). The underwriting
+   `eligibility` endpoint is advisory and read-only.
+5. **Auth is a placeholder**: `X-Actor-Type` ∈ {CUSTOMER, MERCHANT, ADMIN,
+   SYSTEM} + `X-Actor-Id`. It guards everything under `/api/`; `/docs` and
+   `/openapi.yaml` stay public. Replace with real token verification later.
+6. **Installment collection and merchant payout are not yet exposed.** The
+   ledger methods `PayInstallment` / `ClaimDueInstallments` exist and are tested,
+   but there is no HTTP route or worker for them yet, and no `MERCHANT_PAYOUT`
+   entry is produced. Per the confirmed **Model A**, merchant payable is
+   recognized at authorization; settlement is a future worker/Phase 4 concern.
+
+### Open items for Phase 3
+
+- **Refunds**: implement `RefundOrder` in the ledger (compensating `REFUND`
+  entry, fee reversal proportional to the refunded amount) and the
+  `POST /orders/{ref}/refunds` endpoint. Deferred from Phase 2 deliberately.
+- **Merchant payout / collection worker**: wire `ClaimDueInstallments` +
+  `PayInstallment` into a background worker and emit `MERCHANT_PAYOUT`.
+- **React frontend** (Phase 3): checkout flow, installment schedule view, and
+  partial-refund UI via TanStack Query.
+
+### Phase 3 preview
+
+Build the React + TypeScript (Vite) app in `frontend/` with TanStack Query to
+trigger checkouts, inspect schedules, and issue partial refunds, backed by the
+new refund endpoint.

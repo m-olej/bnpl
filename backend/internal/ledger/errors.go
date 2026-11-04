@@ -48,4 +48,7 @@ var (
 	ErrInstallmentNotPayable = errors.New("ledger: installment is not payable")
 	// ErrInvalidOrder is returned when order creation inputs are invalid.
 	ErrInvalidOrder = errors.New("ledger: invalid order")
+	// ErrInsufficientCredit is returned when a customer's available credit
+	// cannot cover a requested principal.
+	ErrInsufficientCredit = errors.New("ledger: insufficient credit")
 )

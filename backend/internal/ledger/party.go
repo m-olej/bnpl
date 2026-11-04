@@ -75,13 +75,98 @@ func (r *Repository) GetCustomerByExternalRef(ctx context.Context, externalRef s
 		}
 		return Customer{}, fmt.Errorf("loading customer %q: %w", externalRef, err)
 	}
-	return Customer{
-		ID:          int64(row.ID),
-		ExternalRef: row.ExternalRef,
-		FullName:    row.FullName,
-		CreditLimit: row.CreditLimit,
-		Currency:    row.Currency,
-	}, nil
+	return mapCustomer(row), nil
+}
+
+// GetCustomer loads a customer by id.
+func (r *Repository) GetCustomer(ctx context.Context, customerID int64) (Customer, error) {
+	row, err := r.q.GetCustomerByID(ctx, uint64(customerID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Customer{}, fmt.Errorf("%w: id=%d", ErrCustomerNotFound, customerID)
+		}
+		return Customer{}, fmt.Errorf("loading customer %d: %w", customerID, err)
+	}
+	return mapCustomer(row), nil
+}
+
+// AvailableCredit returns credit_limit minus the customer's outstanding
+// receivable, clamped at zero.
+func (r *Repository) AvailableCredit(ctx context.Context, customerID int64) (int64, error) {
+	cust, err := r.q.GetCustomerByID(ctx, uint64(customerID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("%w: id=%d", ErrCustomerNotFound, customerID)
+		}
+		return 0, fmt.Errorf("loading customer %d: %w", customerID, err)
+	}
+
+	outstanding, err := outstandingReceivable(ctx, r.q, customerID)
+	if err != nil {
+		return 0, err
+	}
+	available := cust.CreditLimit - outstanding
+	if available < 0 {
+		return 0, nil
+	}
+	return available, nil
+}
+
+// SetCustomerCreditLimit updates a customer's credit limit under a pessimistic
+// lock (AGENTS.md section 1.3) and returns the updated projection.
+func (r *Repository) SetCustomerCreditLimit(ctx context.Context, customerID, limit int64) (Customer, error) {
+	if limit < 0 {
+		return Customer{}, fmt.Errorf("%w: credit_limit must be non-negative", ErrInvalidOrder)
+	}
+
+	var updated Customer
+	err := r.tx.WithTx(ctx, func(tx *sql.Tx) error {
+		q := r.q.WithTx(tx)
+		cust, err := q.GetCustomerByIDForUpdate(ctx, uint64(customerID))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: id=%d", ErrCustomerNotFound, customerID)
+			}
+			return fmt.Errorf("locking customer %d: %w", customerID, err)
+		}
+		if err := q.UpdateCustomerCreditLimit(ctx, sqlc.UpdateCustomerCreditLimitParams{
+			CreditLimit: limit,
+			ID:          cust.ID,
+		}); err != nil {
+			return fmt.Errorf("updating credit limit for customer %d: %w", customerID, err)
+		}
+		cust.CreditLimit = limit
+		updated = mapCustomer(cust)
+		return nil
+	})
+	if err != nil {
+		return Customer{}, err
+	}
+	return updated, nil
+}
+
+// GetMerchant loads a merchant by id.
+func (r *Repository) GetMerchant(ctx context.Context, merchantID int64) (Merchant, error) {
+	row, err := r.q.GetMerchantByID(ctx, uint64(merchantID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Merchant{}, fmt.Errorf("%w: id=%d", ErrMerchantNotFound, merchantID)
+		}
+		return Merchant{}, fmt.Errorf("loading merchant %d: %w", merchantID, err)
+	}
+	return mapMerchant(row), nil
+}
+
+// GetMerchantByRef loads a merchant by its external reference.
+func (r *Repository) GetMerchantByRef(ctx context.Context, merchantRef string) (Merchant, error) {
+	row, err := r.q.GetMerchantByRef(ctx, merchantRef)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Merchant{}, fmt.Errorf("%w: ref=%s", ErrMerchantNotFound, merchantRef)
+		}
+		return Merchant{}, fmt.Errorf("loading merchant %q: %w", merchantRef, err)
+	}
+	return mapMerchant(row), nil
 }
 
 // CreateMerchant inserts a merchant and returns the created projection.
@@ -121,4 +206,24 @@ func (r *Repository) CreateMerchant(
 		FeeBps:      feeBps,
 		Currency:    currency,
 	}, nil
+}
+
+func mapCustomer(c sqlc.Customer) Customer {
+	return Customer{
+		ID:          int64(c.ID),
+		ExternalRef: c.ExternalRef,
+		FullName:    c.FullName,
+		CreditLimit: c.CreditLimit,
+		Currency:    c.Currency,
+	}
+}
+
+func mapMerchant(m sqlc.Merchant) Merchant {
+	return Merchant{
+		ID:          int64(m.ID),
+		MerchantRef: m.MerchantRef,
+		Name:        m.Name,
+		FeeBps:      int(m.FeeBps),
+		Currency:    m.Currency,
+	}
 }

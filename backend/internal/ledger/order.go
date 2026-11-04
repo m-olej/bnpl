@@ -103,6 +103,21 @@ func (r *Repository) CreateOrderWithSchedule(ctx context.Context, p CreateOrderP
 			currency = customer.Currency
 		}
 
+		// Credit guard: the customer row is locked above, so concurrent
+		// authorizations for the same customer serialize here.
+		outstanding, err := outstandingReceivable(ctx, q, p.CustomerID)
+		if err != nil {
+			return err
+		}
+		available := customer.CreditLimit - outstanding
+		if available < 0 {
+			available = 0
+		}
+		if p.PrincipalAmount > available {
+			return fmt.Errorf("%w: customer=%d requested=%d available=%d",
+				ErrInsufficientCredit, p.CustomerID, p.PrincipalAmount, available)
+		}
+
 		fee, err := CalculateFee(p.PrincipalAmount, int64(merchant.FeeBps))
 		if err != nil {
 			return err

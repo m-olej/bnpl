@@ -1,0 +1,548 @@
+openapi: 3.1.0
+info:
+  title: BNPL Split-Payment Engine API
+  version: 0.2.0
+  description: |
+    Checkout and Underwriting HTTP APIs over an immutable, double-entry ledger.
+
+    All monetary amounts are signed 64-bit integers in minor units (cents).
+    Mutating endpoints (POST/PATCH/PUT/DELETE) require an `Idempotency-Key`
+    header and the placeholder identity headers `X-Actor-Type` and `X-Actor-Id`.
+servers:
+  - url: http://localhost:8081
+    description: Checkout service
+  - url: http://localhost:8082
+    description: Underwriting service
+tags:
+  - name: Checkout
+  - name: Underwriting
+
+paths:
+  /api/v1/checkout/authorize:
+    post:
+      tags: [Checkout]
+      summary: Authorize an order and schedule installments
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthorizeRequest"
+      responses:
+        "201":
+          description: Order authorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorizeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "402":
+          $ref: "#/components/responses/InsufficientCredit"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
+
+  /api/v1/orders/{orderRef}:
+    get:
+      tags: [Checkout]
+      summary: Get an order and its installment schedule
+      parameters:
+        - $ref: "#/components/parameters/OrderRef"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Order detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orders/{orderRef}/schedule:
+    get:
+      tags: [Checkout]
+      summary: Get only the installment schedule for an order
+      parameters:
+        - $ref: "#/components/parameters/OrderRef"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Installment schedule
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  installments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Installment"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/customers:
+    post:
+      tags: [Underwriting]
+      summary: Onboard a customer
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCustomerRequest"
+      responses:
+        "201":
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/customers/{externalRef}:
+    get:
+      tags: [Underwriting]
+      summary: Get a customer
+      parameters:
+        - $ref: "#/components/parameters/ExternalRef"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/customers/{externalRef}/limit:
+    patch:
+      tags: [Underwriting]
+      summary: Update a customer's credit limit
+      parameters:
+        - $ref: "#/components/parameters/ExternalRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [credit_limit]
+              properties:
+                credit_limit:
+                  type: integer
+                  format: int64
+                  minimum: 0
+      responses:
+        "200":
+          description: Updated customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/customers/{externalRef}/credit:
+    get:
+      tags: [Underwriting]
+      summary: Get a customer's credit position
+      parameters:
+        - $ref: "#/components/parameters/ExternalRef"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Credit position
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreditPosition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/merchants:
+    post:
+      tags: [Underwriting]
+      summary: Onboard a merchant
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMerchantRequest"
+      responses:
+        "201":
+          description: Merchant created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Merchant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/merchants/{merchantRef}:
+    get:
+      tags: [Underwriting]
+      summary: Get a merchant
+      parameters:
+        - $ref: "#/components/parameters/MerchantRef"
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Merchant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Merchant"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/underwriting/eligibility:
+    get:
+      tags: [Underwriting]
+      summary: Evaluate whether an amount fits a customer's available credit
+      parameters:
+        - name: customer_ref
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: amount
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - $ref: "#/components/parameters/ActorType"
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Decision"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 255
+    ActorType:
+      name: X-Actor-Type
+      in: header
+      required: true
+      schema:
+        type: string
+        enum: [CUSTOMER, MERCHANT, ADMIN, SYSTEM]
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      schema:
+        type: string
+    OrderRef:
+      name: orderRef
+      in: path
+      required: true
+      schema:
+        type: string
+    ExternalRef:
+      name: externalRef
+      in: path
+      required: true
+      schema:
+        type: string
+    MerchantRef:
+      name: merchantRef
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Conflict (in-flight idempotent request or invalid state)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unprocessable:
+      description: Semantically invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InsufficientCredit:
+      description: Requested amount exceeds available credit
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+
+    AuthorizeRequest:
+      type: object
+      required: [customer_id, merchant_id, principal_amount, installment_count]
+      properties:
+        customer_id:
+          type: integer
+          format: int64
+        merchant_id:
+          type: integer
+          format: int64
+        principal_amount:
+          type: integer
+          format: int64
+          description: Total order principal in minor units (cents).
+          minimum: 1
+        currency:
+          type: string
+          default: USD
+        installment_count:
+          type: integer
+          minimum: 1
+          maximum: 255
+        interval_days:
+          type: integer
+          minimum: 0
+          default: 14
+          description: Days between installments.
+        first_due_date:
+          type: string
+          format: date-time
+          description: Defaults to now (UTC).
+
+    Installment:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        number:
+          type: integer
+        amount:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        due_date:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [SCHEDULED, PROCESSING, PAID, FAILED, CANCELLED]
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        order_ref:
+          type: string
+        customer_id:
+          type: integer
+          format: int64
+        merchant_id:
+          type: integer
+          format: int64
+        principal_amount:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        installment_count:
+          type: integer
+        fee_amount:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [PENDING, AUTHORIZED, ACTIVE, COMPLETED, CANCELLED, REFUNDED]
+        created_at:
+          type: string
+          format: date-time
+
+    AuthorizeResponse:
+      type: object
+      properties:
+        order:
+          $ref: "#/components/schemas/Order"
+        installments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Installment"
+        fee_amount:
+          type: integer
+          format: int64
+        merchant_payout:
+          type: integer
+          format: int64
+
+    OrderDetail:
+      type: object
+      properties:
+        order:
+          $ref: "#/components/schemas/Order"
+        installments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Installment"
+
+    CreateCustomerRequest:
+      type: object
+      required: [external_ref, full_name, credit_limit]
+      properties:
+        external_ref:
+          type: string
+        full_name:
+          type: string
+        credit_limit:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+          default: USD
+
+    Customer:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        external_ref:
+          type: string
+        full_name:
+          type: string
+        credit_limit:
+          type: integer
+          format: int64
+        currency:
+          type: string
+
+    CreditPosition:
+      type: object
+      properties:
+        customer_id:
+          type: integer
+          format: int64
+        external_ref:
+          type: string
+        credit_limit:
+          type: integer
+          format: int64
+        outstanding:
+          type: integer
+          format: int64
+        available:
+          type: integer
+          format: int64
+        currency:
+          type: string
+
+    CreateMerchantRequest:
+      type: object
+      required: [merchant_ref, name]
+      properties:
+        merchant_ref:
+          type: string
+        name:
+          type: string
+        fee_bps:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        currency:
+          type: string
+          default: USD
+
+    Merchant:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        merchant_ref:
+          type: string
+        name:
+          type: string
+        fee_bps:
+          type: integer
+        currency:
+          type: string
+
+    Decision:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        requested:
+          type: integer
+          format: int64
+        available:
+          type: integer
+          format: int64
+        reason:
+          type: string

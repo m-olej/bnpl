@@ -10,7 +10,10 @@ MYSQL_PORT     ?= 3306
 MYSQL_DATABASE ?= bnpl
 MYSQL_USER     ?= bnpl
 MYSQL_PASSWORD ?= bnplpw
-DB_DSN ?= $(MYSQL_USER):$(MYSQL_PASSWORD)@tcp($(MYSQL_HOST):$(MYSQL_PORT))/$(MYSQL_DATABASE)?parseTime=true&loc=UTC&multiStatements=true&charset=utf8mb4&collation=utf8mb4_0900_ai_ci
+# Application DSN: no multiStatements.
+DB_DSN ?= $(MYSQL_USER):$(MYSQL_PASSWORD)@tcp($(MYSQL_HOST):$(MYSQL_PORT))/$(MYSQL_DATABASE)?parseTime=true&loc=UTC&charset=utf8mb4&collation=utf8mb4_0900_ai_ci
+# Migration DSN: golang-migrate requires multiStatements.
+MIGRATE_DSN ?= $(MYSQL_USER):$(MYSQL_PASSWORD)@tcp($(MYSQL_HOST):$(MYSQL_PORT))/$(MYSQL_DATABASE)?parseTime=true&loc=UTC&multiStatements=true&charset=utf8mb4&collation=utf8mb4_0900_ai_ci
 
 .PHONY: help
 help: ## Show this help.
@@ -32,11 +35,11 @@ compose-wait: ## Block until MySQL reports healthy.
 
 .PHONY: migrate-up
 migrate-up: ## Apply all up migrations.
-	cd $(BACKEND) && migrate -path migrations -database "mysql://$(DB_DSN)" up
+	cd $(BACKEND) && migrate -path migrations -database "mysql://$(MIGRATE_DSN)" up
 
 .PHONY: migrate-down
 migrate-down: ## Roll back all migrations.
-	cd $(BACKEND) && migrate -path migrations -database "mysql://$(DB_DSN)" down -all
+	cd $(BACKEND) && migrate -path migrations -database "mysql://$(MIGRATE_DSN)" down -all
 
 .PHONY: sqlc
 sqlc: ## Regenerate type-safe SQL.
@@ -60,6 +63,14 @@ test-integration: ## Run backend integration tests (testcontainers).
 
 .PHONY: verify
 verify: build lint test ## Build, lint and unit-test the backend.
+
+.PHONY: run-checkout
+run-checkout: ## Run the Checkout service against the local database.
+	cd $(BACKEND) && DB_DSN="$(DB_DSN)" go run ./cmd/checkout
+
+.PHONY: run-underwriting
+run-underwriting: ## Run the Underwriting service against the local database.
+	cd $(BACKEND) && DB_DSN="$(DB_DSN)" go run ./cmd/underwriting
 
 .PHONY: frontend-install
 frontend-install: ## Install frontend dependencies.

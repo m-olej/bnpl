@@ -261,6 +261,32 @@ func systemAccountID(ctx context.Context, q *sqlc.Queries, code string) (int64, 
 	return int64(acc.ID), nil
 }
 
+// outstandingReceivable returns the customer's current receivable balance
+// (debits minus credits, clamped at zero). A missing receivable account means
+// the customer has no outstanding balance yet.
+func outstandingReceivable(ctx context.Context, q *sqlc.Queries, customerID int64) (int64, error) {
+	acc, err := q.GetAccountByCodeOwner(ctx, sqlc.GetAccountByCodeOwnerParams{
+		Code:      CodeCustomerReceivable,
+		OwnerType: sqlc.AccountsOwnerTypeCUSTOMER,
+		OwnerID:   uint64(customerID),
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("loading receivable for customer %d: %w", customerID, err)
+	}
+	bal, err := q.GetAccountBalance(ctx, acc.ID)
+	if err != nil {
+		return 0, fmt.Errorf("reading receivable balance for customer %d: %w", customerID, err)
+	}
+	net := bal.DebitTotal - bal.CreditTotal
+	if net < 0 {
+		return 0, nil
+	}
+	return net, nil
+}
+
 func nullString(s *string) sql.NullString {
 	if s == nil || *s == "" {
 		return sql.NullString{}
